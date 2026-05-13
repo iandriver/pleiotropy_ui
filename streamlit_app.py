@@ -1456,39 +1456,87 @@ with tab_pop:
                               margin=dict(l=20, r=20, t=20, b=20))
             st.plotly_chart(fig, use_container_width=True)
 
+        if not summary.continuous_pleiotropy.empty:
+            st.markdown("##### Continuous pleiotropy — rate vs n_diseases")
+            st.caption(
+                "Discrete bucket cut-offs (`n_diseases ≥ 6 = highly pleiotropic`, "
+                "etc.) are stand-ins for what the manuscript posits as a "
+                "continuous inverted-U. Plotting clinical / approved rate vs "
+                "binned `n_diseases` on a log-x makes the shape visible — "
+                "the manuscript's 2–5-disease sweet-spot band is shaded."
+            )
+            cp = summary.continuous_pleiotropy
+            fig = go.Figure()
+            for pav, dash in [("no PAV", "dot"), ("PAV", "solid")]:
+                s = cp[cp["PAV"] == pav]
+                for col, color, name in [
+                    ("rate_clinical", "#1f883d", f"any clinical · {pav}"),
+                    ("rate_approved", "#3082b8", f"approved drug · {pav}"),
+                ]:
+                    fig.add_trace(go.Scatter(
+                        x=s["bin_mid"], y=s[col],
+                        mode="lines+markers", name=name,
+                        line=dict(color=color, dash=dash, width=2),
+                        marker=dict(size=8),
+                        customdata=s["n_genes"],
+                        hovertemplate=("n_diseases≈%{x:.0f} · " + name
+                                       + " %{y:.1%} (n=%{customdata})<extra></extra>"),
+                    ))
+            fig.add_vrect(x0=2, x1=5, line_width=0,
+                          fillcolor="#e3b505", opacity=0.10,
+                          annotation_text="sweet spot (≈2–5 TAs)",
+                          annotation_position="top left")
+            fig.update_xaxes(type="log",
+                             title="number of associated diseases (log scale)")
+            fig.update_yaxes(tickformat=".1%", title="rate")
+            fig.update_layout(
+                height=440, margin=dict(l=20, r=20, t=20, b=20),
+                legend=dict(orientation="h", y=1.12),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
     # -------------------------------------------------------------------------
     # Clinical success rates
     # -------------------------------------------------------------------------
     with ds_sub_clinical:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**Approved-drug rate by bucket × PAV**")
-            fig = px.bar(
-                summary.by_pav, x="bucket", y="rate_approved", color="PAV",
-                barmode="group",
-                color_discrete_map={"PAV": "#1f883d", "no PAV": "#9aa0a6"},
-                category_orders={"bucket": drug_safety.BUCKET_ORDER,
-                                 "PAV": ["no PAV", "PAV"]},
-            )
-            fig.update_yaxes(tickformat=".1%",
-                             title="fraction with approved drug")
-            fig.update_layout(height=380,
-                              margin=dict(l=20, r=20, t=20, b=20))
-            st.plotly_chart(fig, use_container_width=True)
-        with c2:
-            st.markdown("**Any-clinical-phase rate by bucket × PAV**")
-            fig = px.bar(
-                summary.by_pav, x="bucket", y="rate_clinical", color="PAV",
-                barmode="group",
-                color_discrete_map={"PAV": "#1f883d", "no PAV": "#9aa0a6"},
-                category_orders={"bucket": drug_safety.BUCKET_ORDER,
-                                 "PAV": ["no PAV", "PAV"]},
-            )
-            fig.update_yaxes(tickformat=".1%",
-                             title="fraction with any clinical-phase drug")
-            fig.update_layout(height=380,
-                              margin=dict(l=20, r=20, t=20, b=20))
-            st.plotly_chart(fig, use_container_width=True)
+        st.markdown("**Clinical vs approved rate by bucket — faceted by PAV**")
+        st.caption(
+            "Side-by-side: any-clinical-phase (green) vs approved (blue) "
+            "rate per pleiotropy bucket, faceted by PAV status. The "
+            "clinical-phase outcome is broader and less survivorship-biased "
+            "than approval; gaps between the two bars indicate attrition "
+            "from trial entry to approval within a cell."
+        )
+        long = []
+        for _, r in summary.by_pav.iterrows():
+            long.append(dict(bucket=r["bucket"], PAV=r["PAV"],
+                             outcome="any clinical phase",
+                             rate=r["rate_clinical"],
+                             n_event=int(r["n_clinical"]),
+                             n=int(r["n_genes"])))
+            long.append(dict(bucket=r["bucket"], PAV=r["PAV"],
+                             outcome="approved drug",
+                             rate=r["rate_approved"],
+                             n_event=int(r["n_approved"]),
+                             n=int(r["n_genes"])))
+        long_df = pd.DataFrame(long)
+        fig = px.bar(
+            long_df, x="bucket", y="rate",
+            color="outcome", barmode="group",
+            facet_col="PAV",
+            color_discrete_map={"any clinical phase": "#1f883d",
+                                "approved drug":     "#3082b8"},
+            category_orders={"bucket": drug_safety.BUCKET_ORDER,
+                             "PAV": ["no PAV", "PAV"],
+                             "outcome": ["any clinical phase", "approved drug"]},
+            labels={"rate": "Fraction of genes"},
+            text="n_event",
+        )
+        fig.update_yaxes(tickformat=".1%")
+        fig.update_layout(height=440,
+                          margin=dict(l=20, r=20, t=20, b=20),
+                          legend=dict(orientation="h", y=1.12))
+        st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("**Max clinical phase distribution (drugged genes only)**")
         drugged = feats[feats["max_drug_phase"] >= 1].copy()
@@ -1533,6 +1581,36 @@ with tab_pop:
                     ["bucket", "PAV", "n_genes", "n_safety", "rate_safety"]
                 ],
                 use_container_width=True, hide_index=True,
+            )
+
+        if not summary.safety_by_phase.empty:
+            st.markdown("##### Safety-event rate by max clinical phase reached")
+            st.caption(
+                "Drugged genes only. A flat-or-rising line by phase means "
+                "OT's safety-event tagging is dominated by post-approval "
+                "pharmacovigilance (more events accumulate as a drug is used "
+                "longer). A falling line means the clinical pipeline is "
+                "successfully filtering safety-event genes before approval."
+            )
+            sp = summary.safety_by_phase
+            fig = px.bar(
+                sp, x="phase_label", y="rate_safety", text="n_safety",
+                labels={"rate_safety": "fraction with OT safety-event flag",
+                        "phase_label": "max clinical phase"},
+            )
+            fig.update_yaxes(tickformat=".1%")
+            fig.update_xaxes(categoryorder="array",
+                             categoryarray=sp["phase_label"].tolist())
+            fig.update_layout(height=380,
+                              margin=dict(l=20, r=20, t=20, b=20))
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(
+                sp[["phase_label", "n_genes", "n_safety", "rate_safety"]]
+                  .rename(columns={"phase_label": "Max clinical phase"}),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "rate_safety": st.column_config.NumberColumn(format="%.1f%%"),
+                },
             )
 
         st.markdown("##### Highly-pleiotropic + safety-flagged + clinically advanced")
@@ -1633,6 +1711,74 @@ with tab_pop:
                     "OR_ucl": st.column_config.NumberColumn(format="%.2f"),
                 },
             )
+
+        # ---- Tractability-stratified within-bucket forest ----
+        wbt = summary.within_bucket_or_by_tract
+        if not wbt.empty:
+            st.markdown("##### Tractability-stratified within-bucket OR (clinical-stage)")
+            st.caption(
+                "Same within-bucket PAV-vs-no-PAV contrast, split by whether the "
+                "target is plausibly druggable (`has_small_mol_binder ∨ "
+                "is_in_membrane ∨ is_secreted`). Tests whether the sweet-spot "
+                "effect survives after controlling for tractability — "
+                "the manuscript flags this as a key confound."
+            )
+            fig = go.Figure()
+            for stratum, color in [("tractable",     "#27ae60"),
+                                   ("non-tractable", "#c0392b")]:
+                sub = wbt[wbt["stratum"] == stratum]
+                if sub.empty:
+                    continue
+                fig.add_trace(go.Scatter(
+                    x=sub["OR"], y=sub["bucket"], mode="markers",
+                    name=stratum,
+                    marker=dict(size=12, color=color),
+                    error_x=dict(
+                        type="data",
+                        array=sub["OR_ucl"] - sub["OR"],
+                        arrayminus=sub["OR"] - sub["OR_lcl"],
+                    ),
+                    text=[
+                        f"{stratum} · {r.bucket}: "
+                        f"PAV {r.rate_pav:.1%} ({r.e_pav}/{r.n_pav}) vs "
+                        f"no-PAV {r.rate_nopav:.1%} ({r.e_nopav}/{r.n_nopav}) · "
+                        f"OR {r.OR:.2f} ({r.OR_lcl:.2f}–{r.OR_ucl:.2f})"
+                        for r in sub.itertuples()
+                    ],
+                    hovertemplate="%{text}<extra></extra>",
+                ))
+            fig.add_vline(x=1.0, line_dash="dash", line_color="grey")
+            fig.update_layout(
+                xaxis_title="Within-bucket OR (PAV vs no-PAV in same bucket × stratum) · log scale",
+                xaxis_type="log",
+                yaxis=dict(categoryorder="array",
+                           categoryarray=drug_safety.BUCKET_ORDER,
+                           autorange="reversed"),
+                height=440, margin=dict(l=20, r=20, t=20, b=20),
+                legend=dict(orientation="h", y=1.12),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            with st.expander("Tractability-stratified OR table"):
+                st.dataframe(
+                    wbt[["stratum", "bucket",
+                         "n_pav", "e_pav", "rate_pav",
+                         "n_nopav", "e_nopav", "rate_nopav",
+                         "OR", "OR_lcl", "OR_ucl"]]
+                    .rename(columns={
+                        "n_pav": "n PAV", "e_pav": "events PAV",
+                        "rate_pav": "rate PAV",
+                        "n_nopav": "n no-PAV", "e_nopav": "events no-PAV",
+                        "rate_nopav": "rate no-PAV",
+                    }),
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "rate PAV":    st.column_config.NumberColumn(format="%.1f%%"),
+                        "rate no-PAV": st.column_config.NumberColumn(format="%.1f%%"),
+                        "OR":     st.column_config.NumberColumn(format="%.2f"),
+                        "OR_lcl": st.column_config.NumberColumn(format="%.2f"),
+                        "OR_ucl": st.column_config.NumberColumn(format="%.2f"),
+                    },
+                )
 
         # ---- Secondary view: ORs vs the no-PAV / none-bucket reference ----
         with st.expander("Compare to the across-bucket forest (vs. no-PAV / none reference)"):

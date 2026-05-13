@@ -530,6 +530,9 @@ class BucketSummary:
     safety_by_pav: pd.DataFrame   # bucket × pav → n_genes, n_safety, rate_safety
     or_table: pd.DataFrame        # odds-ratio table vs reference (no-PAV, none)
     within_bucket_or: pd.DataFrame  # within-bucket PAV-vs-no-PAV ORs (the right framing)
+    within_bucket_or_by_tract: pd.DataFrame  # within-bucket × tractability stratum
+    safety_by_phase: pd.DataFrame  # max clinical phase → n_genes, n_safety, rate_safety
+    continuous_pleiotropy: pd.DataFrame  # binned n_diseases × pav → clinical/approved rates
     tract_rates: pd.DataFrame     # bucket → tractability feature rates
 
 
@@ -641,6 +644,101 @@ def bucket_summary(pav_threshold: float = 0.0) -> BucketSummary:
             ))
     within_bucket_or = pd.DataFrame(within_rows)
 
+    # ------------------------------------------------------------------
+    # Tractability-stratified within-bucket OR. Splits the within-bucket
+    # PAV-vs-no-PAV comparison by whether the target is plausibly
+    # druggable (has_small_mol_binder ∨ is_in_membrane ∨ is_secreted).
+    # Directly addresses the tractability confound on the sweet-spot
+    # effect.
+    # ------------------------------------------------------------------
+    tract_cols = [c for c in ["has_small_mol_binder",
+                              "is_in_membrane", "is_secreted"]
+                  if c in df.columns]
+    if tract_cols:
+        df["_tractable"] = df[tract_cols].any(axis=1)
+        tract_rows = []
+        for stratum_name, stratum_mask in [
+            ("tractable",     df["_tractable"]),
+            ("non-tractable", ~df["_tractable"]),
+        ]:
+            for bucket in BUCKET_ORDER:
+                ref_b = stratum_mask & (df["bucket"] == bucket) & (~df["_pav"])
+                exp_b = stratum_mask & (df["bucket"] == bucket) & (df["_pav"])
+                n_ref = int(ref_b.sum())
+                n_exp = int(exp_b.sum())
+                if n_ref < 5 or n_exp < 5:
+                    continue
+                e_ref = int(df.loc[ref_b, "has_clinical"].sum())
+                e_exp = int(df.loc[exp_b, "has_clinical"].sum())
+                or_, lo, hi = _odds_ratio_2x2(
+                    e_exp, n_exp - e_exp, e_ref, n_ref - e_ref
+                )
+                tract_rows.append(dict(
+                    stratum=stratum_name, bucket=bucket,
+                    n_pav=n_exp, e_pav=e_exp,
+                    rate_pav=e_exp / n_exp if n_exp else 0.0,
+                    n_nopav=n_ref, e_nopav=e_ref,
+                    rate_nopav=e_ref / n_ref if n_ref else 0.0,
+                    OR=or_, OR_lcl=lo, OR_ucl=hi,
+                ))
+        within_bucket_or_by_tract = pd.DataFrame(tract_rows)
+    else:
+        within_bucket_or_by_tract = pd.DataFrame()
+
+    # ------------------------------------------------------------------
+    # Safety-event rate as a function of max clinical phase reached
+    # (drugged genes only). Survivorship sanity check.
+    # ------------------------------------------------------------------
+    if "has_safety_event" in df.columns:
+        drugged = df[df["max_drug_phase"] >= 1].copy()
+        if not drugged.empty:
+            safety_by_phase = (
+                drugged.groupby("max_drug_phase", observed=True)
+                  .agg(n_genes=("geneId", "size"),
+                       n_safety=("has_safety_event", "sum"))
+                  .reset_index()
+            )
+            safety_by_phase["rate_safety"] = (
+                safety_by_phase["n_safety"] / safety_by_phase["n_genes"]
+            )
+            safety_by_phase["phase_label"] = (
+                safety_by_phase["max_drug_phase"]
+                  .map(PHASE_NUM_TO_LABEL)
+                  .fillna(safety_by_phase["max_drug_phase"].astype(str))
+            )
+            safety_by_phase = safety_by_phase.sort_values("max_drug_phase")
+        else:
+            safety_by_phase = pd.DataFrame()
+    else:
+        safety_by_phase = pd.DataFrame()
+
+    # ------------------------------------------------------------------
+    # Continuous pleiotropy — bin n_diseases on a log scale and compute
+    # clinical / approved rates by PAV.
+    # ------------------------------------------------------------------
+    if "n_diseases" in df.columns and df["n_diseases"].max() >= 1:
+        cp = df[["n_diseases", "_pav", "has_clinical", "has_approved"]].copy()
+        cp = cp[cp["n_diseases"] >= 1]
+        edges = np.unique(np.round(np.geomspace(1, cp["n_diseases"].max() + 1, 14)))
+        cp["bin"] = pd.cut(cp["n_diseases"], bins=edges, include_lowest=True)
+        cp["bin_mid"] = cp["bin"].apply(
+            lambda i: float(np.sqrt(i.left * max(i.right, 1)))
+            if pd.notna(i) else np.nan
+        )
+        binned = (
+            cp.dropna(subset=["bin_mid"])
+              .groupby(["bin_mid", "_pav"], observed=True)
+              .agg(n_genes=("has_clinical", "size"),
+                   rate_clinical=("has_clinical", "mean"),
+                   rate_approved=("has_approved", "mean"))
+              .reset_index()
+        )
+        binned["PAV"] = binned["_pav"].map({True: "PAV", False: "no PAV"})
+        binned = binned[binned["n_genes"] >= 10].copy()
+        continuous_pleiotropy = binned.sort_values(["PAV", "bin_mid"])
+    else:
+        continuous_pleiotropy = pd.DataFrame()
+
     tract_features = [
         c for c in ["has_small_mol_binder", "has_ligand",
                     "is_in_membrane", "is_secreted"]
@@ -660,6 +758,9 @@ def bucket_summary(pav_threshold: float = 0.0) -> BucketSummary:
         safety_by_pav=safety,
         or_table=or_table,
         within_bucket_or=within_bucket_or,
+        within_bucket_or_by_tract=within_bucket_or_by_tract,
+        safety_by_phase=safety_by_phase,
+        continuous_pleiotropy=continuous_pleiotropy,
         tract_rates=tract_rates,
     )
 
