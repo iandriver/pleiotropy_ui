@@ -529,16 +529,33 @@ class BucketSummary:
     by_pav: pd.DataFrame          # bucket × pav → n_genes, n_clinical, n_approved, rates
     safety_by_pav: pd.DataFrame   # bucket × pav → n_genes, n_safety, rate_safety
     or_table: pd.DataFrame        # odds-ratio table vs reference (no-PAV, none)
+    within_bucket_or: pd.DataFrame  # within-bucket PAV-vs-no-PAV ORs (the right framing)
     tract_rates: pd.DataFrame     # bucket → tractability feature rates
 
 
-def _pav_series(df: pd.DataFrame, pav_threshold: float) -> pd.Series:
-    """Reproduce the notebook's `_pav` flag from `genetic_constraint`."""
-    if "genetic_constraint" in df.columns:
-        # OT's geneticConstraint is a normalized score; the notebook treated
-        # `> 0` as a proxy for "has PAV-like genetic evidence".
-        return (df["genetic_constraint"].fillna(0) > pav_threshold)
-    return pd.Series(False, index=df.index)
+def _pav_series(df: pd.DataFrame, pav_threshold: float = 0.0) -> pd.Series:
+    """Reproduce the notebook's `_pav` flag from `genetic_constraint`.
+
+    Default behaviour (``pav_threshold == 0``) matches the
+    `pleiotropy_drugs_safety.ipynb` notebook: a gene is considered
+    PAV-supported if its ``geneticConstraint`` score is *anything other
+    than zero* (the OT 26.03 `target_prioritisation` field encodes "no
+    evidence" as exactly 0 / NaN, and "some genetic evidence" as a signed
+    score). NaN rows are treated as no evidence.
+
+    For exploratory use, callers can raise the threshold above 0 to
+    restrict to strongly-constrained genes only (``genetic_constraint
+    > threshold``); that's the stricter "is the gene under purifying
+    selection?" proxy.
+    """
+    if "genetic_constraint" not in df.columns:
+        return pd.Series(False, index=df.index)
+    gc = df["genetic_constraint"]
+    if pav_threshold > 0:
+        return gc.fillna(0) > pav_threshold
+    # Notebook default — any non-zero geneticConstraint counts as
+    # "has genetic evidence" (broad PAV-equivalent).
+    return gc.fillna(0).astype(float) != 0
 
 
 def bucket_summary(pav_threshold: float = 0.0) -> BucketSummary:
@@ -594,6 +611,36 @@ def bucket_summary(pav_threshold: float = 0.0) -> BucketSummary:
             ))
     or_table = pd.DataFrame(rows)
 
+    # Within-bucket PAV-vs-no-PAV ORs — answers the manuscript's actual
+    # claim: inside a given pleiotropy bucket, does PAV evidence raise the
+    # drug-success rate? Reference is each bucket's own no-PAV cell.
+    within_rows = []
+    for bucket in BUCKET_ORDER:
+        ref_mask_b = (df["bucket"] == bucket) & (~df["_pav"])
+        exp_mask_b = (df["bucket"] == bucket) & (df["_pav"])
+        n_ref = int(ref_mask_b.sum())
+        n_exp = int(exp_mask_b.sum())
+        if n_ref < 5 or n_exp < 5:
+            continue
+        for outcome_col, outcome_label in [
+            ("has_clinical", "any clinical phase"),
+            ("has_approved", "approved drug"),
+        ]:
+            e_ref = int(df.loc[ref_mask_b, outcome_col].sum())
+            e_exp = int(df.loc[exp_mask_b, outcome_col].sum())
+            or_, lo, hi = _odds_ratio_2x2(
+                e_exp, n_exp - e_exp, e_ref, n_ref - e_ref
+            )
+            within_rows.append(dict(
+                bucket=bucket, outcome=outcome_label,
+                n_pav=n_exp, e_pav=e_exp,
+                rate_pav=e_exp / n_exp if n_exp else 0.0,
+                n_nopav=n_ref, e_nopav=e_ref,
+                rate_nopav=e_ref / n_ref if n_ref else 0.0,
+                OR=or_, OR_lcl=lo, OR_ucl=hi,
+            ))
+    within_bucket_or = pd.DataFrame(within_rows)
+
     tract_features = [
         c for c in ["has_small_mol_binder", "has_ligand",
                     "is_in_membrane", "is_secreted"]
@@ -612,6 +659,7 @@ def bucket_summary(pav_threshold: float = 0.0) -> BucketSummary:
         by_pav=by_pav,
         safety_by_pav=safety,
         or_table=or_table,
+        within_bucket_or=within_bucket_or,
         tract_rates=tract_rates,
     )
 

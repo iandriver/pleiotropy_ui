@@ -1557,47 +1557,130 @@ with tab_pop:
     # -------------------------------------------------------------------------
     with ds_sub_or:
         st.markdown(
-            "**Odds ratio for *approved drug* vs reference cell** "
-            "(reference = no-PAV, bucket=none). Haldane–Anscombe-corrected "
-            "for zero cells; log-x forest plot."
+            "##### Within-bucket lift from PAV evidence"
         )
-        ortbl = summary.or_table
-        if ortbl.empty:
-            st.info("Not enough data in reference cell.")
+        st.caption(
+            "PAV-vs-no-PAV odds ratio **within** each pleiotropy bucket — "
+            "each bucket's own no-PAV cell is the local reference. "
+            "**OR=1** ⇒ PAV makes no difference inside this bucket · "
+            "**OR>1** ⇒ PAV raises the drug-success rate · "
+            "**OR<1** ⇒ PAV lowers it. This is the right framing for the "
+            "manuscript's 'intermediate × PAV is the sweet spot' claim, "
+            "and avoids the confusing 'no-PAV higher than PAV' visual "
+            "artifact you get when everything is plotted against the "
+            "no-PAV / none-bucket reference cell."
+        )
+        wb = summary.within_bucket_or
+        if wb.empty:
+            st.info("Not enough data within buckets to compute the forest.")
         else:
-            ortbl = ortbl.assign(
-                label=lambda d: d["bucket"].astype(str) + "  ·  " + d["PAV"]
-            )
             import plotly.graph_objects as go
             fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=ortbl["OR"], y=ortbl["label"], mode="markers",
-                marker=dict(size=11,
-                            color=["#1f883d" if p == "PAV" else "#9aa0a6"
-                                   for p in ortbl["PAV"]]),
-                error_x=dict(
-                    type="data",
-                    array=ortbl["OR_ucl"] - ortbl["OR"],
-                    arrayminus=ortbl["OR"] - ortbl["OR_lcl"],
-                ),
-                text=[f"OR {r.OR:.2f}  ({r.OR_lcl:.2f}–{r.OR_ucl:.2f})  ·  "
-                      f"{r.n_approved}/{r.n_genes}"
-                      for r in ortbl.itertuples()],
-                hovertemplate="%{text}<extra></extra>",
-            ))
-            fig.add_vline(x=1.0, line_dash="dash", line_color="grey")
+            for outcome, color in [("any clinical phase", "#1f883d"),
+                                   ("approved drug",     "#3082b8")]:
+                sub = wb[wb["outcome"] == outcome]
+                if sub.empty:
+                    continue
+                fig.add_trace(go.Scatter(
+                    x=sub["OR"], y=sub["bucket"], mode="markers",
+                    name=outcome,
+                    marker=dict(size=13, color=color),
+                    error_x=dict(
+                        type="data",
+                        array=sub["OR_ucl"] - sub["OR"],
+                        arrayminus=sub["OR"] - sub["OR_lcl"],
+                    ),
+                    text=[
+                        f"{outcome}: PAV {r.rate_pav:.1%} "
+                        f"({r.e_pav}/{r.n_pav}) vs no-PAV {r.rate_nopav:.1%} "
+                        f"({r.e_nopav}/{r.n_nopav}) · "
+                        f"OR {r.OR:.2f}  ({r.OR_lcl:.2f}–{r.OR_ucl:.2f})"
+                        for r in sub.itertuples()
+                    ],
+                    hovertemplate="%{text}<extra></extra>",
+                ))
+            fig.add_vline(x=1.0, line_dash="dash", line_color="grey",
+                          annotation_text="OR=1 — PAV no different from no-PAV",
+                          annotation_position="top right")
             fig.update_layout(
-                xaxis_title="odds ratio (log scale)",
+                xaxis_title="Odds ratio (log scale) · OR>1 = PAV helps inside this bucket",
                 xaxis_type="log",
-                yaxis=dict(autorange="reversed"),
-                height=440, margin=dict(l=20, r=20, t=20, b=20),
+                yaxis=dict(categoryorder="array",
+                           categoryarray=drug_safety.BUCKET_ORDER,
+                           autorange="reversed"),
+                height=440, margin=dict(l=20, r=20, t=30, b=20),
+                legend=dict(orientation="h", y=1.12),
             )
             st.plotly_chart(fig, use_container_width=True)
+
             st.dataframe(
-                ortbl[["bucket", "PAV", "n_genes", "n_approved",
-                       "rate", "OR", "OR_lcl", "OR_ucl"]],
+                wb[["bucket", "outcome",
+                    "n_pav", "e_pav", "rate_pav",
+                    "n_nopav", "e_nopav", "rate_nopav",
+                    "OR", "OR_lcl", "OR_ucl"]]
+                .rename(columns={
+                    "n_pav": "n PAV", "e_pav": "events PAV",
+                    "rate_pav": "rate PAV",
+                    "n_nopav": "n no-PAV", "e_nopav": "events no-PAV",
+                    "rate_nopav": "rate no-PAV",
+                }),
                 use_container_width=True, hide_index=True,
+                column_config={
+                    "rate PAV":    st.column_config.NumberColumn(format="%.1f%%"),
+                    "rate no-PAV": st.column_config.NumberColumn(format="%.1f%%"),
+                    "OR":     st.column_config.NumberColumn(format="%.2f"),
+                    "OR_lcl": st.column_config.NumberColumn(format="%.2f"),
+                    "OR_ucl": st.column_config.NumberColumn(format="%.2f"),
+                },
             )
+
+        # ---- Secondary view: ORs vs the no-PAV / none-bucket reference ----
+        with st.expander("Compare to the across-bucket forest (vs. no-PAV / none reference)"):
+            st.caption(
+                "Older framing — each cell's OR is against `no-PAV / none-bucket`. "
+                "Useful to see absolute lift over baseline-uninteresting biology, "
+                "but reads counterintuitively (the no-PAV cells of impressive "
+                "buckets can sit higher than their PAV counterparts even when "
+                "PAV helps within-bucket — because the reference itself is "
+                "no-PAV)."
+            )
+            ortbl = summary.or_table
+            if ortbl.empty:
+                st.info("Not enough data in reference cell.")
+            else:
+                ortbl = ortbl.assign(
+                    label=lambda d: d["bucket"].astype(str) + "  ·  " + d["PAV"]
+                )
+                import plotly.graph_objects as go
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=ortbl["OR"], y=ortbl["label"], mode="markers",
+                    marker=dict(size=11,
+                                color=["#1f883d" if p == "PAV" else "#9aa0a6"
+                                       for p in ortbl["PAV"]]),
+                    error_x=dict(
+                        type="data",
+                        array=ortbl["OR_ucl"] - ortbl["OR"],
+                        arrayminus=ortbl["OR"] - ortbl["OR_lcl"],
+                    ),
+                    text=[f"OR {r.OR:.2f}  ({r.OR_lcl:.2f}–{r.OR_ucl:.2f})  ·  "
+                          f"{r.n_approved}/{r.n_genes}"
+                          for r in ortbl.itertuples()],
+                    hovertemplate="%{text}<extra></extra>",
+                ))
+                fig.add_vline(x=1.0, line_dash="dash", line_color="grey")
+                fig.update_layout(
+                    xaxis_title="OR vs reference (no-PAV / none-bucket), log scale",
+                    xaxis_type="log",
+                    yaxis=dict(autorange="reversed"),
+                    height=440, margin=dict(l=20, r=20, t=20, b=20),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(
+                    ortbl[["bucket", "PAV", "n_genes", "n_approved",
+                           "rate", "OR", "OR_lcl", "OR_ucl"]],
+                    use_container_width=True, hide_index=True,
+                )
 
     # -------------------------------------------------------------------------
     # Full feature table — filter + download
