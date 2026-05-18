@@ -58,6 +58,15 @@ htmlcov/
 .pleio_cache.sqlite
 
 # -----------------------------------------------------------------------------
+# bgzipped VCFs and tabix index sidecars. htslib drops .tbi files into cwd
+# when querying remote bgzf, and the gnomAD VCFs themselves are tens of GB.
+# -----------------------------------------------------------------------------
+*.vcf.bgz
+*.vcf.gz
+*.tbi
+*.csi
+
+# -----------------------------------------------------------------------------
 # Editor + OS junk
 # -----------------------------------------------------------------------------
 .DS_Store
