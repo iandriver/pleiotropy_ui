@@ -202,6 +202,37 @@ def success_rate_curve(
     return pd.DataFrame(rows).sort_values(group_cols).reset_index(drop=True)
 
 
+def binned_outcome_rate(
+    df: pd.DataFrame,
+    feature: str,
+    outcome: str,
+    n_bins: int = 10,
+) -> pd.DataFrame:
+    """Outcome rate (+ Wilson 95% CI) across bins of any feature.
+
+    A feature with few distinct values (e.g. a 0/1 flag, or a small
+    integer count) is grouped by value; a continuous feature is split
+    into ``n_bins`` quantile bins (ranked, so ties don't collapse).
+    Returns ``x`` (bin-median feature value), ``n``, ``k``, ``rate``,
+    ``ci_lo``, ``ci_hi`` — ready to plot as an axis-vs-outcome curve.
+    """
+    d = df[[feature, outcome]].dropna().copy()
+    d[outcome] = d[outcome].astype(int)
+    if d[feature].nunique() <= n_bins:
+        d["_grp"] = d[feature]
+    else:
+        d["_grp"] = pd.qcut(d[feature].rank(method="first"),
+                            n_bins, labels=False)
+    rows = []
+    for _, sub in d.groupby("_grp", observed=True):
+        n = len(sub)
+        k = int(sub[outcome].sum())
+        lo, hi = wilson_ci(k, n)
+        rows.append({"x": float(sub[feature].median()), "n": n, "k": k,
+                     "rate": k / n, "ci_lo": lo, "ci_hi": hi})
+    return pd.DataFrame(rows).sort_values("x").reset_index(drop=True)
+
+
 def fit_quadratic_sweet_spot(
     df: pd.DataFrame,
     outcome: str,
