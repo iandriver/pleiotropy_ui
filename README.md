@@ -41,6 +41,12 @@ Supporting deep-dive tabs:
 * **`5 · Population stats`** — manuscript-style population analysis:
   pleiotropy × PAV stacked bars, approved-drug-rate by bucket × PAV,
   safety-event rate, odds-ratio forest, full filterable per-gene table.
+  The §12 multivariate model now also includes a **rare-variant burden
+  axis** (G&H 44k ExWAS — `gh_n_burden_TAs`, `gh_is_human_ko`, …) with
+  a §12g block that runs the formal mediation test of common-variant
+  pleiotropy → safety through rare-variant burden, and replicates the
+  paper's antagonist-drug × human-knockout × Phase-1-progression
+  finding within our OT cohort.
 * **`6 · Agent`** — Claude tool-use orchestrator stub.
 
 ## Setup
@@ -72,6 +78,25 @@ required for the pleiotropy bucket; if you don't have it, run
 The per-gene drug-safety feature table
 (`data/all_genes_features.parquet`) is built on demand at app startup and
 cached.
+
+Two optional feature axes for the §12 multivariate model — both built
+by dedicated scripts:
+
+```bash
+python scripts/fetch_gtex_tau.py                      # GTEx v8 τ (~6 MB)
+python scripts/fetch_coloc_mechanism.py               # OT colocalisation (~16 GB stream)
+python scripts/fetch_genes_and_health_burden.py       # G&H 44k ExWAS burden (~5 GB)
+```
+
+`fetch_genes_and_health_burden.py` pulls the public **Genes & Health 44k
+ExWAS** gene-burden sumstats (Kim, DeBoever, Walter, van Heel et al.
+2026, *Nat Genet* 58:821) from `gs://genesandhealth_publicdatasets/` —
+~750 REGENIE gene-test files across 54 quantitative + 591 binary
+EHR-derived traits — and derives per-gene rare-variant features:
+`gh_n_burden_TAs` (rare-variant analogue of the GWAS `n_TAs`),
+`gh_max_log10p` (strongest burden signal), `gh_is_human_ko` (≥1
+biallelic pLoF carrier, 2,991-gene set behind the paper's OR=2.16 P=5e-5
+Phase-1-progression finding), plus carrier counts.
 
 ### Run
 

@@ -1423,19 +1423,23 @@ with tab_pop:
                   f"{int(feats['has_safety_event'].sum()):,}")
 
         st.markdown("##### Pleiotropy bucket × PAV stack")
+        # reindex both axes so a missing bucket or PAV column can't collapse
+        # a Bar y= to a scalar int (plotly rejects scalars).
         stack = (
             summary.by_pav.pivot_table(index="bucket", columns="PAV",
                                        values="n_genes", aggfunc="sum")
-                  .reindex(drug_safety.BUCKET_ORDER).fillna(0).astype(int)
+                  .reindex(index=drug_safety.BUCKET_ORDER,
+                           columns=["no PAV", "PAV"])
+                  .fillna(0).astype(int)
         )
         import plotly.graph_objects as go
         fig = go.Figure()
         fig.add_trace(go.Bar(x=stack.index.astype(str),
-                             y=stack.get("no PAV", 0),
+                             y=stack["no PAV"],
                              name="no PAV",
                              marker=dict(color="#9aa0a6")))
         fig.add_trace(go.Bar(x=stack.index.astype(str),
-                             y=stack.get("PAV", 0),
+                             y=stack["PAV"],
                              name="PAV-supported",
                              marker=dict(color="#1f883d")))
         fig.update_layout(barmode="stack",

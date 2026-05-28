@@ -32,8 +32,15 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR = _PROJECT_ROOT / "data"
-_FEATURES_PARQUET = _DATA_DIR / "all_genes_features.parquet"
+# Module-private cache. Deliberately NOT "all_genes_features.parquet" —
+# that filename is written by pleiotropy_drugs_safety.ipynb with a
+# different (notebook) schema, and the two clobbering each other left the
+# app loading a table with no `genetic_constraint` column.
+_FEATURES_PARQUET = _DATA_DIR / "drug_safety_features.parquet"
 _PLEIO_PARQUET = _DATA_DIR / "all_genes_pleiotropy_l2g.parquet"
+# Columns the module's own feature build must contain; if a cached
+# parquet lacks them it's a foreign schema and is rebuilt.
+_REQUIRED_FEATURE_COLS = ("genetic_constraint", "has_safety_event", "bucket")
 
 
 def _latest_release_dir() -> Path:
@@ -226,18 +233,22 @@ def _build_features() -> pd.DataFrame:
 def get_features() -> pd.DataFrame:
     """Return the per-gene drug/safety/tractability feature table.
 
-    Reads from ``data/all_genes_features.parquet`` if available, otherwise
-    builds the table from raw OT parquets and writes the result to that
-    path so subsequent cold starts are instant.
+    Reads from ``data/drug_safety_features.parquet`` if available *and*
+    it carries this module's schema; otherwise builds the table from raw
+    OT parquets and caches it so subsequent cold starts are instant. The
+    schema check guards against a stale or foreign cache (e.g. one left
+    by an older release) silently degrading every downstream feature.
     """
     if _FEATURES_PARQUET.exists():
         df = pd.read_parquet(_FEATURES_PARQUET)
-        if "bucket" in df.columns:
-            df["bucket"] = pd.Categorical(
-                df["bucket"].fillna("none"),
-                categories=BUCKET_ORDER, ordered=True,
-            )
-        return df
+        if all(c in df.columns for c in _REQUIRED_FEATURE_COLS):
+            if "bucket" in df.columns:
+                df["bucket"] = pd.Categorical(
+                    df["bucket"].fillna("none"),
+                    categories=BUCKET_ORDER, ordered=True,
+                )
+            return df
+        # Foreign / stale schema — fall through and rebuild.
     df = _build_features()
     try:
         out = df.copy()
